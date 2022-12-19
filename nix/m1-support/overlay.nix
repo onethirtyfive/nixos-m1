@@ -1,7 +1,5 @@
 self: super:
 {
-  # nb. below may actually *require* overrides to reference
-  # nb. inconsistecy of pkg definition location is a smell
   asahi-fwextract = self.callPackage ./asahi-fwextract {};
   asahi-kernel = self.callPackage ./kernel {};
   m1n1 = self.callPackage ./m1n1 {};
