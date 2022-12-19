@@ -3,7 +3,7 @@
   imports = [
     ./kernel
     ./peripheral-firmware
-    ./boot-m1n1
+    ./boot-m1n1/module.nix
   ];
 
   config =
