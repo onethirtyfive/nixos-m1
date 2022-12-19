@@ -1,9 +1,9 @@
 { config, pkgs, lib, ... }:
 {
   imports = [
-    ./kernel/module.nix
-    ./peripheral-firmware/module.nix
-    ./boot-m1n1/module.nix
+    ./modules/kernel.nix
+    ./modules/peripheral-firmware.nix
+    ./modules/boot-m1n1.nix
   ];
 
   config =
@@ -17,7 +17,7 @@
         };
 
       overlays = [
-        (import ./overlay.nix)
+        (import ./asahi-overlay)
       ];
     in {
       hardware.asahi.pkgs = import pkgs.path (tweaks // { inherit overlays; });
