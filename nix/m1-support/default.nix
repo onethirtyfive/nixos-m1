@@ -1,7 +1,7 @@
 { config, pkgs, lib, ... }:
 {
   imports = [
-    ./kernel
+    ./kernel/module.nix
     ./peripheral-firmware
     ./boot-m1n1/module.nix
   ];
