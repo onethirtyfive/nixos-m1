@@ -2,7 +2,7 @@
 {
   imports = [
     ./kernel/module.nix
-    ./peripheral-firmware
+    ./peripheral-firmware/module.nix
     ./boot-m1n1/module.nix
   ];
 
