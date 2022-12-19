@@ -1,102 +1,82 @@
-# the Asahi Linux kernel and options that must go along with it
+{ pkgs
+, _4KBuild ? false
+, kernelPatches ? [ ]
+}: let
+  localPkgs =
+    # we do this so the config can be read on any system and not affect
+    # the output hash
+    if builtins ? currentSystem then import (pkgs.path) { system = builtins.currentSystem; }
+    else pkgs;
 
-{ config, pkgs, lib, ... }:
-let
-  pkgs' = config.hardware.asahi.pkgs;
-in {
-  config = {
-    boot.kernelPackages = pkgs'.asahi-kernel.override {
-      inherit (config.boot) kernelPatches;
-      _4KBuild = config.hardware.asahi.use4KPages;
-    };
+  lib = localPkgs.lib;
 
-    # we definitely want to use CONFIG_ENERGY_MODEL, and
-    # schedutil is a prerequisite for using it
-    # source: https://www.kernel.org/doc/html/latest/scheduler/sched-energy.html
-    powerManagement.cpuFreqGovernor = lib.mkOverride 800 "schedutil";
+  parseExtraConfig = cfg: let
+    lines = builtins.filter (s: s != "") (lib.strings.splitString "\n" cfg);
+    perLine = line: let
+      kv = lib.strings.splitString " " line;
+    in assert (builtins.length kv == 2);
+      "CONFIG_${builtins.elemAt kv 0}=${builtins.elemAt kv 1}";
+    in lib.strings.concatMapStringsSep "\n" perLine lines;
 
-    boot.initrd.includeDefaultModules = false;
-    boot.initrd.availableKernelModules = [
-      # list of initrd modules stolen from
-      # https://github.com/AsahiLinux/asahi-scripts/blob/f461f080a1d2575ae4b82879b5624360db3cff8c/initcpio/install/asahi
-      "apple-mailbox"
-      "nvme_apple"
-      "pinctrl-apple-gpio"
-      "macsmc"
-      "macsmc-rtkit"
-      "i2c-apple"
-      "tps6598x"
-      "apple-dart"
-      "dwc3"
-      "dwc3-of-simple"
-      "xhci-pci"
-      "pcie-apple"
-      "gpio_macsmc"
-      "phy-apple-atc"
-      "nvmem_apple_efuses"
-      "spi-apple"
-      "spi-hid-apple"
-      "spi-hid-apple-of"
-      "rtc-macsmc"
-      "simple-mfd-spmi"
-      "spmi-apple-controller"
-      "nvmem_spmi_mfd"
-      "apple-dockchannel"
-      "dockchannel-hid"
-      "apple-rtkit-helper"
+  readConfig = configfile: import (localPkgs.runCommand "config.nix" { } ''
+    echo "{ } // " > "$out"
+    while IFS='=' read key val; do
+      [ "x''${key#CONFIG_}" != "x$key" ] || continue
+      no_firstquote="''${val#\"}";
+      echo '{  "'"$key"'" = "'"''${no_firstquote%\"}"'"; } //' >> "$out"
+    done < "${configfile}"
+    echo "{ }" >> $out
+  '').outPath;
 
-      # additional stuff necessary to boot off USB for the installer
-      # and if the initrd (i.e. stage 1) goes wrong
-      "usb-storage"
-      "xhci-plat-hcd"
-      "usbhid"
-      "hid_generic"
-    ];
+  linux_asahi_pkg = { stdenv, lib, fetchFromGitHub, fetchpatch, linuxKernel, ... } @ args:
+    let
+      configfile = if kernelPatches == [ ] then ./config else
+      pkgs.writeText "config" ''
+        ${builtins.readFile ./config}
 
-    boot.kernelParams = [
-      "earlycon"
-      "console=ttySAC0,1500000"
-      "console=tty0"
-      "boot.shell_on_fail"
-      # Apple's SSDs are slow (~dozens of ms) at processing flush requests which
-      # slows down programs that make a lot of fsync calls. This parameter sets
-      # a delay in ms before actually flushing so that such requests can be
-      # coalesced. Be warned that increasing this parameter above zero (default
-      # is 1000) has the potential, though admittedly unlikely, risk of
-      # UNBOUNDED data corruption in case of power loss!!!! Don't even think
-      # about it on desktops!!
-      "nvme_apple.flush_interval=0"
-    ];
+        # Patches
+        ${lib.strings.concatMapStringsSep "\n" ({extraConfig ? "", ...}: parseExtraConfig extraConfig) kernelPatches}
+      '';
 
-    # U-Boot does not support EFI variables
-    boot.loader.efi.canTouchEfiVariables = lib.mkForce false;
+      _kernelPatches = kernelPatches;
+    in
+    linuxKernel.manualConfig rec {
+      inherit stdenv lib;
 
-    # GRUB has to be installed as removable if the user chooses to use it
-    boot.loader.grub = lib.mkDefault {
-      version = 2;
-      efiSupport = true;
-      efiInstallAsRemovable = true;
-      device = "nodev";
-    };
-  };
+      version = "6.1.0-rc8-asahi";
+      modDirVersion = version;
 
-  imports = [
-    (lib.mkRemovedOptionModule [ "boot" "kernelBuildIsCross" ] ''
-      If it should still be true (which is unlikely), replace it
-      with 'hardware.asahi.pkgsSystem = "x86_64-linux"'. Otherwise, delete it.
-    '')
+      src = fetchFromGitHub {
+        # tracking: https://github.com/AsahiLinux/PKGBUILDs/blob/stable/linux-asahi/PKGBUILD
+        owner = "AsahiLinux";
+        repo = "linux";
+        rev = "asahi-6.1-rc8-2";
+        hash = "sha256-P4PiqD4tF8ZiOxY59O4mYhDuQMZkoMjJuqmRGN0hJ/o=";
+      };
 
-    (lib.mkRemovedOptionModule [ "boot" "kernelBuildIs16K" ] ''
-      Replaced with 'hardware.asahi.use4KPages' which defaults to false.
-    '')
-  ];
+      kernelPatches = [
+      ] ++ lib.optionals _4KBuild [
+        # thanks to Sven Peter
+        # https://lore.kernel.org/linux-iommu/20211019163737.46269-1-sven@svenpeter.dev/
+        { name = "sven-iommu-4k";
+          patch = ./sven-iommu-4k.patch;
+        }
+      ] ++ lib.optionals (!_4KBuild) [
+        # patch the kernel to set the default size to 16k instead of modifying
+        # the config so we don't need to convert our config to the nixos
+        # infrastructure or patch it and thus introduce a dependency on the host
+        # system architecture
+        { name = "default-pagesize-16k";
+          patch = ./default-pagesize-16k.patch;
+        }
+      ] ++ _kernelPatches;
 
-  options.hardware.asahi.use4KPages = lib.mkOption {
-    type = lib.types.bool;
-    default = false;
-    description = ''
-      Build the Asahi Linux kernel with 4K pages to improve compatibility in
-      some cases at the cost of performance in others.
-    '';
-  };
-}
+      inherit configfile;
+      config = readConfig configfile;
+
+      extraMeta.branch = "6.1";
+    } // (args.argsOverride or {});
+
+  linux_asahi = (pkgs.callPackage linux_asahi_pkg { });
+in pkgs.recurseIntoAttrs (pkgs.linuxPackagesFor linux_asahi)
+
